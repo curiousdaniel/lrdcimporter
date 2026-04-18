@@ -157,6 +157,12 @@
       <p class="meta" id="offlineCount">No file loaded.</p>
       <label for="formId">Form ID (query param <code>form_id</code>)</label>
       <input type="text" id="formId" value="277791" />
+      <label for="noteIntro">Optional intro for donation / org notes (saved in this browser)</label>
+      <textarea
+        id="noteIntro"
+        rows="3"
+        placeholder="Example: Manually recorded by Your Name on 1-26-2025."
+      ></textarea>
     </section>
 
     <section>
@@ -192,7 +198,8 @@
         </div>
       </div>
       <p class="meta">
-        Org comments are filled with JSON of the full row. If the note is very long, it may be truncated so the URL stays within browser limits.
+        Donation / org notes include your optional intro, <code>form_id</code> parameters, and a <strong>Raw Data</strong> line
+        (tab-separated values in column order). If the note is very long, it may be truncated so the URL stays within browser limits.
       </p>
       <div id="mappingHints" class="meta" hidden></div>
       <button type="button" id="btnRefresh">Refresh links</button>

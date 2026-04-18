@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Donorbox offline donation prefill
 // @namespace    lrdc-offline-importer
-// @version      1.0.2
+// @version      1.0.3
 // @description  Fills the Donorbox org-admin offline donation form from #dbOffline= / #!dbOffline= base64 JSON (flat or nested donation object). You must be logged in; complete captcha and submit manually if required.
 // @match        https://donorbox.org/org_admin/supporters/*/donor_donations/new*
 // @match        https://*.donorbox.org/org_admin/supporters/*/donor_donations/new*
@@ -15,7 +15,7 @@
  * - Donation date: input#donation_donation_date
  * - Deposit date: input#donation_offline_donation_additional_detail_attributes_deposit_date
  * - Amount:        input#amount
- * - Org note:      textarea#donation_org_comments
+ * - Org / donation notes: textarea#donation_org_comments and #donation_comment when present
  * - Check # (opt): input#donation_offline_donation_additional_detail_attributes_check_number
  */
 
@@ -97,26 +97,45 @@
     return '';
   }
 
+  function normalizePaymentType(raw) {
+    var s = String(raw == null ? '' : raw);
+    var t = s.trim().toLowerCase();
+    if (!t) return '';
+    if (/paypal|pay\s*pal|^pp$|pp\s*checkout|pay\s*pal\s*checkout/i.test(s)) return 'paypal';
+    if (/venmo|cash\s*app|apple\s*pay|google\s*pay|credit|debit|visa|mastercard|amex|discover|card/i.test(s)) {
+      return 'credit_card';
+    }
+    if (/ach|bank\s*transfer|wire|eft|echeck|e-check/i.test(s)) return 'external_bank_transfer';
+    if (/check|cheque/i.test(s)) return 'check';
+    if (t === 'cash') return 'cash';
+    if (/crypto|bitcoin|btc/i.test(s)) return 'cryptocurrency';
+    return t.replace(/\s+/g, '_').slice(0, 48);
+  }
+
   /** Map launcher keys plus alternates (nested PayPal-style exports, manual tests). */
   function normalizePayload(data) {
     if (!data || typeof data !== 'object') return null;
     var d = flattenPayload(data);
+    var rawType = String(
+      d.donationType ||
+        d.payment_type ||
+        d.paymentType ||
+        d.payment ||
+        d.type ||
+        d.donation_type ||
+        ''
+    );
+    var donationDate = toISODate(
+      d.donationDate || d.donation_date || d.date || d.giftDate || d.transaction_date || ''
+    );
+    var depositDate = toISODate(
+      d.depositDate || d.deposit_date || d.bankDate || d.date_deposited || ''
+    );
+    if (!depositDate && donationDate) depositDate = donationDate;
     return {
-      donationType: String(
-        d.donationType ||
-          d.payment_type ||
-          d.paymentType ||
-          d.payment ||
-          d.type ||
-          d.donation_type ||
-          ''
-      ),
-      donationDate: toISODate(
-        d.donationDate || d.donation_date || d.date || d.giftDate || d.transaction_date || ''
-      ),
-      depositDate: toISODate(
-        d.depositDate || d.deposit_date || d.bankDate || d.date_deposited || ''
-      ),
+      donationType: normalizePaymentType(rawType),
+      donationDate: donationDate,
+      depositDate: depositDate,
       amount: d.amount != null && d.amount !== '' ? String(d.amount) : '',
       orgComments: String(
         d.orgComments ||
@@ -126,7 +145,7 @@
           d.org_comment ||
           d.memo ||
           ''
-      ),
+      ).trim(),
       checkNumber: String(
         d.checkNumber != null && d.checkNumber !== ''
           ? d.checkNumber
@@ -147,13 +166,19 @@
 
   function setSelectValue(sel, value) {
     if (!sel || value == null || value === '') return;
-    var v = String(value).toLowerCase().trim();
+    var v = normalizePaymentType(value) || String(value).toLowerCase().trim();
+    if (!v) return;
     var opt = Array.prototype.find.call(sel.options, function (o) {
       return o.value.toLowerCase() === v;
     });
     if (!opt) {
       opt = Array.prototype.find.call(sel.options, function (o) {
         return o.textContent.toLowerCase().trim() === v;
+      });
+    }
+    if (!opt && v.length >= 4) {
+      opt = Array.prototype.find.call(sel.options, function (o) {
+        return o.textContent.toLowerCase().indexOf(v) !== -1;
       });
     }
     if (opt && opt.value) {
@@ -170,6 +195,7 @@
     );
     var amount = document.querySelector('#amount');
     var orgComments = document.querySelector('#donation_org_comments');
+    var donorComment = document.querySelector('#donation_comment');
     var checkNum = document.querySelector(
       '#donation_offline_donation_additional_detail_attributes_check_number'
     );
@@ -189,9 +215,16 @@
       amount.value = String(data.amount);
       dispatchAll(amount);
     }
-    if (data.orgComments != null && data.orgComments !== '' && orgComments) {
-      orgComments.value = String(data.orgComments);
-      dispatchAll(orgComments);
+    if (data.orgComments != null && data.orgComments !== '') {
+      var noteText = String(data.orgComments);
+      if (orgComments) {
+        orgComments.value = noteText;
+        dispatchAll(orgComments);
+      }
+      if (donorComment) {
+        donorComment.value = noteText;
+        dispatchAll(donorComment);
+      }
     }
     if (data.checkNumber != null && data.checkNumber !== '' && checkNum) {
       checkNum.value = String(data.checkNumber);

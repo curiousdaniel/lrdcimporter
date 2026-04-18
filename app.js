@@ -468,8 +468,51 @@
     );
   }
 
-  function rowRawNote(headers, rowObj) {
-    return JSON.stringify(rowObj, null, 2);
+  /** Map spreadsheet payment labels to Donorbox <select> values. */
+  function normalizePaymentType(raw) {
+    var s = String(raw == null ? '' : raw);
+    var t = s.trim().toLowerCase();
+    if (!t) return '';
+    if (/paypal|pay\s*pal|^pp$|pp\s*checkout|pay\s*pal\s*checkout/i.test(s)) return 'paypal';
+    if (/venmo|cash\s*app|apple\s*pay|google\s*pay|credit|debit|visa|mastercard|amex|discover|card/i.test(s)) {
+      return 'credit_card';
+    }
+    if (/ach|bank\s*transfer|wire|eft|echeck|e-check/i.test(s)) return 'external_bank_transfer';
+    if (/check|cheque/i.test(s)) return 'check';
+    if (t === 'cash') return 'cash';
+    if (/crypto|bitcoin|btc/i.test(s)) return 'cryptocurrency';
+    return t.replace(/\s+/g, '_').slice(0, 48);
+  }
+
+  /** One spreadsheet row as tab-separated values (column order = file headers). */
+  function rowAsRawTsv(headers, row) {
+    return headers
+      .map(function (h) {
+        var v = row[h];
+        if (v == null) return '';
+        return String(v).replace(/\r?\n/g, ' ').replace(/\t/g, ' ');
+      })
+      .join('\t');
+  }
+
+  /** Text block for Donorbox org / donation notes. */
+  function buildOrgComments(headers, row, formId) {
+    var intro = '';
+    try {
+      intro = String(($('noteIntro') && $('noteIntro').value) || '').trim();
+    } catch (e) {
+      intro = '';
+    }
+    var tsv = rowAsRawTsv(headers, row);
+    var body =
+      'Parameters:\nform_id: ' +
+      formId +
+      '\n\nRaw Query String: form_id=' +
+      formId +
+      '\n\nRaw Data: ' +
+      tsv;
+    if (intro) return intro + '\n\n' + body;
+    return body;
   }
 
   function fillSelect(sel, headers, preferred) {
@@ -589,11 +632,14 @@
     var amount = String(amountRaw).replace(/[$,]/g, '').trim();
     var donationDate = map.donationDate ? toISODate(row[map.donationDate]) : '';
     var depositDate = map.depositDate ? toISODate(row[map.depositDate]) : '';
+    if (!depositDate && donationDate) depositDate = donationDate;
     var paymentRaw = map.payment ? row[map.payment] : '';
+    var paymentType = normalizePaymentType(paymentRaw);
     var checkNumber = map.check ? String(row[map.check] || '').trim() : '';
-    var orgComments = rowRawNote(state.offlineHeaders, row);
+    var formId = ($('formId').value || '277791').trim();
+    var orgComments = buildOrgComments(state.offlineHeaders, row, formId);
     return {
-      donationType: String(paymentRaw || '').trim(),
+      donationType: paymentType,
       donationDate: donationDate,
       depositDate: depositDate,
       amount: amount,
@@ -694,6 +740,22 @@
     });
     $('btnOpenNext').addEventListener('click', openNextRowInOrder);
     $('formId').addEventListener('change', refreshTable);
+    var noteIntro = $('noteIntro');
+    if (noteIntro) {
+      try {
+        noteIntro.value = localStorage.getItem('dbOfflineNoteIntro') || '';
+      } catch (e) {
+        noteIntro.value = '';
+      }
+      noteIntro.addEventListener('input', function () {
+        try {
+          localStorage.setItem('dbOfflineNoteIntro', noteIntro.value);
+        } catch (e2) {
+          /* ignore */
+        }
+        refreshTable();
+      });
+    }
     [
       'colEmail',
       'colAmount',
