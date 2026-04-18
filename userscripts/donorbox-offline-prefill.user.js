@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Donorbox offline donation prefill
 // @namespace    lrdc-offline-importer
-// @version      1.0.3
+// @version      1.0.4
 // @description  Fills the Donorbox org-admin offline donation form from #dbOffline= / #!dbOffline= base64 JSON (flat or nested donation object). You must be logged in; complete captcha and submit manually if required.
 // @match        https://donorbox.org/org_admin/supporters/*/donor_donations/new*
 // @match        https://*.donorbox.org/org_admin/supporters/*/donor_donations/new*
@@ -101,7 +101,9 @@
     var s = String(raw == null ? '' : raw);
     var t = s.trim().toLowerCase();
     if (!t) return '';
-    if (/paypal|pay\s*pal|^pp$|pp\s*checkout|pay\s*pal\s*checkout/i.test(s)) return 'paypal';
+    if (/paypal|pay\s*pal|^pp$|pp\s*checkout|pay\s*pal\s*checkout|express\s*checkout|website\s*payment|send\s*money/i.test(s)) {
+      return 'paypal';
+    }
     if (/venmo|cash\s*app|apple\s*pay|google\s*pay|credit|debit|visa|mastercard|amex|discover|card/i.test(s)) {
       return 'credit_card';
     }
@@ -132,8 +134,17 @@
       d.depositDate || d.deposit_date || d.bankDate || d.date_deposited || ''
     );
     if (!depositDate && donationDate) depositDate = donationDate;
+    var donationType = normalizePaymentType(rawType);
+    try {
+      var blob = JSON.stringify(d).toLowerCase();
+      if (blob.indexOf('paypal') !== -1 && donationType !== 'credit_card') {
+        donationType = 'paypal';
+      }
+    } catch (eBlob) {
+      /* ignore */
+    }
     return {
-      donationType: normalizePaymentType(rawType),
+      donationType: donationType,
       donationDate: donationDate,
       depositDate: depositDate,
       amount: d.amount != null && d.amount !== '' ? String(d.amount) : '',

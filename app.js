@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  var MAX_HASH_PAYLOAD_CHARS = 7200;
+  var MAX_HASH_PAYLOAD_CHARS = 14000;
 
   var state = {
     donorRows: [],
@@ -486,16 +486,43 @@
   }
 
   function payloadHash(data) {
-    var note = data.orgComments || '';
+    var full = data.orgComments || '';
+    var MARK = '\n\nRaw Data: ';
+    var splitIdx = full.indexOf(MARK);
     var base = Object.assign({}, data);
     var safety = 0;
-    while (safety++ < 40) {
+    var truncated = false;
+    var ip = full;
+    var rawSuffix = '';
+    if (splitIdx >= 0) {
+      ip = full.slice(0, splitIdx);
+      rawSuffix = full.slice(splitIdx);
+    }
+    var note = full;
+    while (safety++ < 70) {
       base.orgComments = note;
       var enc = encodePayload(base);
-      if (enc.length <= MAX_HASH_PAYLOAD_CHARS) return { enc: enc, truncated: note !== (data.orgComments || '') };
+      if (enc.length <= MAX_HASH_PAYLOAD_CHARS) {
+        return { enc: enc, truncated: truncated || note !== full };
+      }
+      if (splitIdx >= 0 && rawSuffix.length > MARK.length + 40) {
+        var tsv = rawSuffix.slice(MARK.length);
+        tsv = tsv.slice(0, Math.max(20, Math.floor(tsv.length * 0.88)));
+        rawSuffix = MARK + tsv;
+        note = ip + rawSuffix;
+        truncated = true;
+        continue;
+      }
+      if (splitIdx >= 0 && ip.length > 60) {
+        ip = ip.slice(0, Math.max(40, Math.floor(ip.length * 0.88)));
+        note = ip + rawSuffix;
+        truncated = true;
+        continue;
+      }
       note =
-        note.slice(0, Math.floor(note.length * 0.75)) +
+        note.slice(0, Math.max(80, Math.floor(note.length * 0.75))) +
         '\n[... truncated for browser URL length; full row is in your offline file ...]';
+      truncated = true;
     }
     base.orgComments = '[payload too large]';
     return { enc: encodePayload(base), truncated: true };
@@ -518,7 +545,9 @@
     var s = String(raw == null ? '' : raw);
     var t = s.trim().toLowerCase();
     if (!t) return '';
-    if (/paypal|pay\s*pal|^pp$|pp\s*checkout|pay\s*pal\s*checkout/i.test(s)) return 'paypal';
+    if (/paypal|pay\s*pal|^pp$|pp\s*checkout|pay\s*pal\s*checkout|express\s*checkout|website\s*payment|send\s*money/i.test(s)) {
+      return 'paypal';
+    }
     if (/venmo|cash\s*app|apple\s*pay|google\s*pay|credit|debit|visa|mastercard|amex|discover|card/i.test(s)) {
       return 'credit_card';
     }
@@ -527,6 +556,15 @@
     if (t === 'cash') return 'cash';
     if (/crypto|bitcoin|btc/i.test(s)) return 'cryptocurrency';
     return t.replace(/\s+/g, '_').slice(0, 48);
+  }
+
+  /** If any cell mentions PayPal (e.g. Item title), treat as PayPal even when Type column only says "Payment". */
+  function inferPaypalFromRowCells(row, headers) {
+    var parts = [];
+    for (var i = 0; i < headers.length; i++) {
+      parts.push(String(row[headers[i]] == null ? '' : row[headers[i]]));
+    }
+    return /paypal/i.test(parts.join('\t'));
   }
 
   /** One spreadsheet row as tab-separated values (column order = file headers). */
@@ -680,6 +718,9 @@
     if (!depositDate && donationDate) depositDate = donationDate;
     var paymentRaw = map.payment ? row[map.payment] : '';
     var paymentType = normalizePaymentType(paymentRaw);
+    if (inferPaypalFromRowCells(row, state.offlineHeaders)) {
+      paymentType = 'paypal';
+    }
     var checkNumber = map.check ? String(row[map.check] || '').trim() : '';
     var formId = ($('formId').value || '277791').trim();
     var orgComments = buildOrgComments(state.offlineHeaders, row, formId);
