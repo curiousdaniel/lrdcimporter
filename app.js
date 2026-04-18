@@ -311,6 +311,50 @@
     return '';
   }
 
+  /** Exact strings shown in Donorbox “The Purpose of Your Donation:” dropdown (for pass-through match). */
+  var DONORBOX_PURPOSE_OPTION_LABELS = [
+    'General Donation to Lion\'s Roar Dharma Center',
+    'Membership (minimum $50/mo)',
+    'Donate to Lama Jinpa\'s Care Fund',
+    'April Retreat 2026',
+    'Darshan',
+    'Donate to support Lion\'s Roar Building',
+    'Donate to Sera Jey Monastery',
+    'Book Donation',
+    'Retreat Studio',
+  ];
+
+  /** Spreadsheet “Product/Service full name” → exact Donorbox dropdown label. */
+  var PRODUCT_SERVICE_TO_PURPOSE = {
+    '4010 Membership Pledge': 'Membership (minimum $50/mo)',
+    '4002 General Donations': "General Donation to Lion's Roar Dharma Center",
+    '4253 Workshops': "General Donation to Lion's Roar Dharma Center",
+    'Monastic Support (category):7050 Lama Jinpa Donations': "Donate to Lama Jinpa's Care Fund",
+    '4252 Retreat': 'April Retreat 2026',
+    '4004 Credit Card Donations': "General Donation to Lion's Roar Dharma Center",
+  };
+
+  function normalizeProductServiceKey(s) {
+    return String(s == null ? '' : s)
+      .trim()
+      .replace(/\s+/g, ' ');
+  }
+
+  function mapProductServiceToPurpose(raw) {
+    var key = normalizeProductServiceKey(raw);
+    if (!key) return '';
+    if (Object.prototype.hasOwnProperty.call(PRODUCT_SERVICE_TO_PURPOSE, key)) {
+      return PRODUCT_SERVICE_TO_PURPOSE[key];
+    }
+    var lower = key.toLowerCase();
+    for (var i = 0; i < DONORBOX_PURPOSE_OPTION_LABELS.length; i++) {
+      if (DONORBOX_PURPOSE_OPTION_LABELS[i].toLowerCase() === lower) {
+        return DONORBOX_PURPOSE_OPTION_LABELS[i];
+      }
+    }
+    return '';
+  }
+
   function applySmartColumnDefaults(hdrs, records) {
     fillSelect($('colEmail'), hdrs, []);
     fillSelect($('colAmount'), hdrs, []);
@@ -318,6 +362,7 @@
     fillSelect($('colDepositDate'), hdrs, []);
     fillSelect($('colPayment'), hdrs, []);
     fillSelect($('colCheck'), hdrs, []);
+    fillSelect($('colProduct'), hdrs, []);
 
     var emailCol = chooseEmailColumn(hdrs, records);
     if (emailCol) $('colEmail').value = emailCol;
@@ -364,6 +409,11 @@
       findCol(hdrs, ['check', 'check number', 'check #', 'check_no', 'check no']) ||
       findColSubstring(hdrs, ['check number', 'check #']);
     if (checkCol) $('colCheck').value = checkCol;
+
+    var productCol =
+      findCol(hdrs, ['product/service full name', 'product service full name']) ||
+      findColSubstring(hdrs, ['product/service', 'product service full']);
+    if (productCol) $('colProduct').value = productCol;
   }
 
   function updateMappingHints() {
@@ -707,6 +757,7 @@
       depositDate: $('colDepositDate').value,
       payment: $('colPayment').value,
       check: $('colCheck').value,
+      productService: $('colProduct').value,
     };
   }
 
@@ -723,6 +774,8 @@
       paymentType = 'paypal';
     }
     var checkNumber = map.check ? String(row[map.check] || '').trim() : '';
+    var productRaw = map.productService ? row[map.productService] : '';
+    var donationPurpose = map.productService ? mapProductServiceToPurpose(productRaw) : '';
     var formId = ($('formId').value || '277791').trim();
     var orgComments = buildOrgComments(state.offlineHeaders, row, formId);
     return {
@@ -732,6 +785,7 @@
       amount: amount,
       orgComments: orgComments,
       checkNumber: checkNumber,
+      donationPurpose: donationPurpose,
     };
   }
 
@@ -962,6 +1016,7 @@
       'colDepositDate',
       'colPayment',
       'colCheck',
+      'colProduct',
     ].forEach(function (id) {
       $(id).addEventListener('change', refreshTable);
     });

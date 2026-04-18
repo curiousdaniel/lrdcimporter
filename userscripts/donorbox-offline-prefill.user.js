@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Donorbox offline donation prefill
 // @namespace    lrdc-offline-importer
-// @version      1.0.5
+// @version      1.0.6
 // @description  Fills the Donorbox org-admin offline donation form from #dbOffline= / #!dbOffline= base64 JSON (flat or nested donation object). You must be logged in; complete captcha and submit manually if required.
 // @match        https://donorbox.org/org_admin/supporters/*/donor_donations/new*
 // @match        https://*.donorbox.org/org_admin/supporters/*/donor_donations/new*
@@ -17,6 +17,7 @@
  * - Amount:        input#amount
  * - Org / donation notes: textarea#donation_org_comments and #donation_comment when present
  * - Check # (opt): input#donation_offline_donation_additional_detail_attributes_check_number
+ * - Purpose of donation: select next to label “The Purpose of Your Donation:” (or donation form / campaign select fallbacks), option text must match launcher payload
  */
 
 (function () {
@@ -166,6 +167,14 @@
               ? d.check
               : ''
       ),
+      donationPurpose: String(
+        d.donationPurpose ||
+          d.purpose ||
+          d.donation_purpose ||
+          d.purposeLabel ||
+          d.purpose_of_donation ||
+          ''
+      ).trim(),
     };
   }
 
@@ -198,6 +207,57 @@
     }
   }
 
+  /** “The Purpose of Your Donation:” and similar selects use numeric values; match by visible option label. */
+  function findPurposeSelect() {
+    var labels = document.querySelectorAll('label');
+    for (var i = 0; i < labels.length; i++) {
+      var t = labels[i].textContent || '';
+      if (/purpose\s+of\s+your\s+donation/i.test(t)) {
+        var fid = labels[i].getAttribute('for');
+        if (fid) {
+          var byId = document.getElementById(fid);
+          if (byId && byId.tagName === 'SELECT') return byId;
+        }
+        var wrap = labels[i].closest ? labels[i].closest('div') : null;
+        if (!wrap) wrap = labels[i].parentElement;
+        if (wrap) {
+          var s = wrap.querySelector('select');
+          if (s) return s;
+        }
+      }
+    }
+    return (
+      document.querySelector('select[name="donation[donation_form_id]"]') ||
+      document.querySelector('#donation_donation_form_id') ||
+      document.querySelector('select[name="donation[campaign_id]"]') ||
+      document.querySelector('#donation_campaign_id')
+    );
+  }
+
+  function setPurposeSelect(sel, labelText) {
+    if (!sel || labelText == null) return;
+    var want = String(labelText).trim();
+    if (!want) return;
+    var wantLower = want.toLowerCase();
+    var opt = Array.prototype.find.call(sel.options, function (o) {
+      return (o.textContent || '').trim() === want;
+    });
+    if (!opt) {
+      opt = Array.prototype.find.call(sel.options, function (o) {
+        return (o.textContent || '').trim().toLowerCase() === wantLower;
+      });
+    }
+    if (!opt) {
+      opt = Array.prototype.find.call(sel.options, function (o) {
+        return (o.textContent || '').trim().toLowerCase().indexOf(wantLower) !== -1;
+      });
+    }
+    if (opt && opt.value != null && opt.value !== '') {
+      sel.value = opt.value;
+      dispatchAll(sel);
+    }
+  }
+
   function apply(data) {
     var typeSel = document.querySelector('#donation_donation_type');
     var donationDate = document.querySelector('#donation_donation_date');
@@ -210,6 +270,7 @@
     var checkNum = document.querySelector(
       '#donation_offline_donation_additional_detail_attributes_check_number'
     );
+    var purposeSel = findPurposeSelect();
 
     if (data.donationType != null && data.donationType !== '') {
       setSelectValue(typeSel, data.donationType);
@@ -240,6 +301,9 @@
     if (data.checkNumber != null && data.checkNumber !== '' && checkNum) {
       checkNum.value = String(data.checkNumber);
       dispatchAll(checkNum);
+    }
+    if (data.donationPurpose != null && data.donationPurpose !== '' && purposeSel) {
+      setPurposeSelect(purposeSel, data.donationPurpose);
     }
   }
 
