@@ -14,6 +14,10 @@
     formId: '277791',
     nextRowIndex: 0,
     rowUrls: [],
+    dbConfigured: false,
+    /** row_key -> { recorded: boolean, recordedAt: string|null } from Neon lookup */
+    recordedFromDb: {},
+    dbLookupTimer: null,
   };
 
   function $(id) {
@@ -364,6 +368,8 @@
     fillSelect($('colPayment'), hdrs, []);
     fillSelect($('colCheck'), hdrs, []);
     fillSelect($('colProduct'), hdrs, []);
+    if ($('colDonorName')) fillSelect($('colDonorName'), hdrs, []);
+    if ($('colMemo')) fillSelect($('colMemo'), hdrs, []);
 
     var emailCol = chooseEmailColumn(hdrs, records);
     if (emailCol) $('colEmail').value = emailCol;
@@ -415,6 +421,24 @@
       findCol(hdrs, ['product/service full name', 'product service full name']) ||
       findColSubstring(hdrs, ['product/service', 'product service full']);
     if (productCol) $('colProduct').value = productCol;
+
+    var nameCol =
+      findCol(hdrs, [
+        'name',
+        'donor name',
+        'full name',
+        'customer name',
+        'from name',
+        'payer name',
+        'buyer name',
+        'contact name',
+      ]) || findColSubstring(hdrs, ['from name', 'donor name', 'customer name']);
+    if (nameCol && $('colDonorName')) $('colDonorName').value = nameCol;
+
+    var memoCol =
+      findCol(hdrs, ['memo', 'description', 'notes', 'note', 'subject', 'message', 'detail']) ||
+      findColSubstring(hdrs, ['item title', 'transaction note', 'memo', 'description']);
+    if (memoCol && $('colMemo')) $('colMemo').value = memoCol;
   }
 
   function updateMappingHints() {
@@ -674,6 +698,224 @@
     }
   }
 
+  function formatRecordedAt(iso) {
+    if (!iso) return '';
+    try {
+      var d = new Date(iso);
+      if (isNaN(d.getTime())) return '';
+      return d.toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function rowDisplayValues(row, map) {
+    var dn = map.donorName ? String(row[map.donorName] == null ? '' : row[map.donorName]).trim() : '';
+    var amt = map.amount ? String(row[map.amount] == null ? '' : row[map.amount]).trim() : '';
+    var payRaw = map.payment ? row[map.payment] : '';
+    var pay = String(payRaw == null ? '' : payRaw).trim();
+    var memo = map.memo ? String(row[map.memo] == null ? '' : row[map.memo]).trim() : '';
+    return { donorName: dn, amount: amt, payment: pay, memo: memo };
+  }
+
+  function clipCell(text, maxLen) {
+    var s = String(text == null ? '' : text);
+    if (s.length <= maxLen) return { text: s, title: '' };
+    return { text: s.slice(0, Math.max(1, maxLen - 1)) + '…', title: s };
+  }
+
+  function getRecordedInfo(rowKey, localKeys) {
+    if (Object.prototype.hasOwnProperty.call(state.recordedFromDb, rowKey)) {
+      var d = state.recordedFromDb[rowKey];
+      return { recorded: !!d.recorded, recordedAt: d.recordedAt || null };
+    }
+    return { recorded: !!localKeys[rowKey], recordedAt: null };
+  }
+
+  function updateDbHint() {
+    var el = $('dbStatusHint');
+    if (!el) return;
+    var btn = $('btnSaveImportDb');
+    if (btn) btn.disabled = !state.dbConfigured;
+    if (!state.dbConfigured) {
+      el.textContent =
+        'Database: not configured (set DATABASE_URL on Vercel or in .env.local for local dev). Recorded state uses this browser only.';
+      el.hidden = false;
+      el.className = 'meta';
+      return;
+    }
+    el.textContent =
+      'Database: connected. Row metadata and recorded status sync to Neon when you use “Save import to database” and when you mark rows.';
+    el.hidden = false;
+    el.className = 'meta';
+  }
+
+  function scheduleDbLookup() {
+    if (!state.dbConfigured) return;
+    if (state.dbLookupTimer) clearTimeout(state.dbLookupTimer);
+    state.dbLookupTimer = setTimeout(function () {
+      state.dbLookupTimer = null;
+      performDbLookup();
+    }, 400);
+  }
+
+  function performDbLookup() {
+    if (!state.dbConfigured || !state.offlineRows.length) return;
+    var map = getMapping();
+    var allKeys = [];
+    for (var i = 0; i < state.offlineRows.length; i++) {
+      allKeys.push(rowRecordKey(state.offlineRows[i], map, state.offlineHeaders));
+    }
+    var unique = [];
+    var seen = {};
+    for (var j = 0; j < allKeys.length; j++) {
+      if (seen[allKeys[j]]) continue;
+      seen[allKeys[j]] = 1;
+      unique.push(allKeys[j]);
+    }
+    for (var k = 0; k < unique.length; k++) {
+      delete state.recordedFromDb[unique[k]];
+    }
+    var pos = 0;
+    var chunk = 400;
+    function nextChunk() {
+      var slice = unique.slice(pos, pos + chunk);
+      pos += chunk;
+      if (!slice.length) {
+        refreshTable();
+        return;
+      }
+      fetch('/api/donation-rows/lookup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keys: slice }),
+      })
+        .then(function (r) {
+          return r.json();
+        })
+        .then(function (data) {
+          if (data && Array.isArray(data.rows)) {
+            for (var x = 0; x < data.rows.length; x++) {
+              var row = data.rows[x];
+              var rk = row.row_key;
+              if (!rk) continue;
+              var ra = row.recorded_at;
+              state.recordedFromDb[rk] = {
+                recorded: !!row.recorded,
+                recordedAt: ra ? new Date(ra).toISOString() : null,
+              };
+            }
+          }
+        })
+        .catch(function () {
+          /* ignore */
+        })
+        .finally(function () {
+          nextChunk();
+        });
+    }
+    nextChunk();
+  }
+
+  function buildSyncRowsPayload() {
+    var map = getMapping();
+    var localKeys = loadRecordedKeys();
+    var rows = [];
+    for (var i = 0; i < state.offlineRows.length; i++) {
+      var row = state.offlineRows[i];
+      var rk = rowRecordKey(row, map, state.offlineHeaders);
+      var email = map.email ? String(row[map.email] || '').trim() : '';
+      var res = resolveSupporterId(email);
+      var disp = rowDisplayValues(row, map);
+      var payRaw = map.payment ? row[map.payment] : '';
+      var paymentType = normalizePaymentType(payRaw);
+      if (inferPaypalFromRowCells(row, state.offlineHeaders)) paymentType = 'paypal';
+      var info = getRecordedInfo(rk, localKeys);
+      rows.push({
+        row_key: rk,
+        supporter_id: res.id != null ? String(res.id) : null,
+        email: email || null,
+        donor_name: disp.donorName || null,
+        amount: disp.amount || null,
+        payment_method: disp.payment || null,
+        memo: disp.memo || null,
+        recorded: info.recorded,
+      });
+    }
+    return rows;
+  }
+
+  function onSaveImportDbClick() {
+    if (!state.dbConfigured) {
+      setStatus('DATABASE_URL is not set on the server.', true);
+      return;
+    }
+    if (!state.offlineRows.length) {
+      setStatus('Load an offline file first.', true);
+      return;
+    }
+    var rows = buildSyncRowsPayload();
+    setStatus('Saving import to database…', false);
+    fetch('/api/donation-rows/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rows: rows }),
+    })
+      .then(function (r) {
+        return r.json().then(function (j) {
+          return { ok: r.ok, j: j };
+        });
+      })
+      .then(function (x) {
+        if (!x.ok) {
+          setStatus((x.j && x.j.error) || 'Save to database failed.', true);
+          return;
+        }
+        setStatus('Saved ' + (x.j.upserted || rows.length) + ' row(s) to Neon.', false);
+        scheduleDbLookup();
+      })
+      .catch(function () {
+        setStatus('Save to database failed (network).', true);
+      });
+  }
+
+  function persistRecordedToApi(rowKeys, recorded, thenFn) {
+    if (!state.dbConfigured || !rowKeys.length) {
+      if (thenFn) thenFn();
+      return;
+    }
+    fetch('/api/donation-rows/recorded', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        updates: rowKeys.map(function (k) {
+          return { rowKey: k, recorded: recorded };
+        }),
+      }),
+    })
+      .then(function (r) {
+        return r.json().then(function (j) {
+          return { ok: r.ok, j: j };
+        });
+      })
+      .then(function (x) {
+        if (x.ok && x.j && Array.isArray(x.j.results)) {
+          for (var i = 0; i < x.j.results.length; i++) {
+            var rr = x.j.results[i];
+            if (!rr.row_key) continue;
+            state.recordedFromDb[rr.row_key] = {
+              recorded: !!rr.recorded,
+              recordedAt: rr.recorded_at || null,
+            };
+          }
+        }
+        if (thenFn) thenFn();
+      })
+      .catch(function () {
+        if (thenFn) thenFn();
+      });
+  }
+
   function updateRowFilterSummary(total, visibleCount, totalRecorded, filterVal) {
     var el = $('rowFilterSummary');
     if (!el) return;
@@ -799,10 +1041,12 @@
   function finishOfflineParsed(parsed) {
     state.offlineHeaders = parsed.headers;
     state.offlineRows = parsed.records;
+    state.recordedFromDb = {};
     $('offlineCount').textContent = String(parsed.records.length) + ' rows';
     applySmartColumnDefaults(parsed.headers, parsed.records);
     setStatus('Offline file loaded. Check column mapping hints below, then Refresh links.', false);
     refreshTable();
+    if (state.dbConfigured) scheduleDbLookup();
   }
 
   function resolveSupporterId(emailVal) {
@@ -819,12 +1063,14 @@
   function getMapping() {
     return {
       email: $('colEmail').value,
+      donorName: $('colDonorName') ? $('colDonorName').value : '',
       amount: $('colAmount').value,
       donationDate: $('colDonationDate').value,
       depositDate: $('colDepositDate').value,
       payment: $('colPayment').value,
       check: $('colCheck').value,
       productService: $('colProduct').value,
+      memo: $('colMemo') ? $('colMemo').value : '',
     };
   }
 
@@ -888,13 +1134,14 @@
     for (var m = 0; m < total; m++) {
       var rowM = state.offlineRows[m];
       var k = rowRecordKey(rowM, map, state.offlineHeaders);
-      var rec = !!recordedKeys[k];
+      var info = getRecordedInfo(k, recordedKeys);
+      var rec = info.recorded;
       if (rec) totalRecorded++;
       var show =
         filterVal === 'all' ||
         (filterVal === 'recorded' && rec) ||
         (filterVal === 'not_recorded' && !rec);
-      rowMeta.push({ key: k, recorded: rec, show: show });
+      rowMeta.push({ key: k, recorded: rec, recordedAt: info.recordedAt, show: show });
     }
     var visibleCount = 0;
     for (var vc = 0; vc < rowMeta.length; vc++) {
@@ -931,6 +1178,31 @@
       var tdRec = document.createElement('td');
       tdRec.className = 'col-recorded' + (meta.recorded ? ' recorded-yes' : ' recorded-no');
       tdRec.textContent = meta.recorded ? 'Yes' : '—';
+
+      var tdRecAt = document.createElement('td');
+      tdRecAt.className = 'col-recorded-at';
+      tdRecAt.textContent = meta.recorded && meta.recordedAt ? formatRecordedAt(meta.recordedAt) : '—';
+
+      var disp = rowDisplayValues(row, map);
+      var dnClip = clipCell(disp.donorName, 48);
+      var tdName = document.createElement('td');
+      tdName.className = 'cell-clip';
+      tdName.textContent = dnClip.text || '—';
+      if (dnClip.title) tdName.title = dnClip.title;
+
+      var tdAmt = document.createElement('td');
+      tdAmt.className = 'cell-clip';
+      tdAmt.textContent = disp.amount || '—';
+
+      var tdPay = document.createElement('td');
+      tdPay.className = 'cell-clip';
+      tdPay.textContent = disp.payment || '—';
+
+      var memoClip = clipCell(disp.memo, 64);
+      var tdMemo = document.createElement('td');
+      tdMemo.className = 'cell-clip';
+      tdMemo.textContent = memoClip.text || '—';
+      if (memoClip.title) tdMemo.title = memoClip.title;
 
       var td1 = document.createElement('td');
       td1.textContent = String(email || '');
@@ -972,6 +1244,11 @@
       tr.appendChild(tdSel);
       tr.appendChild(td0);
       tr.appendChild(tdRec);
+      tr.appendChild(tdRecAt);
+      tr.appendChild(tdName);
+      tr.appendChild(tdAmt);
+      tr.appendChild(tdPay);
+      tr.appendChild(tdMemo);
       tr.appendChild(td1);
       tr.appendChild(td2);
       tr.appendChild(td3);
@@ -1090,14 +1367,25 @@
     }
     var keys = loadRecordedKeys();
     var map = getMapping();
+    var rowKeys = [];
     for (var i = 0; i < idxs.length; i++) {
       var row = state.offlineRows[idxs[i]];
       if (!row) continue;
-      keys[rowRecordKey(row, map, state.offlineHeaders)] = 1;
+      var rk = rowRecordKey(row, map, state.offlineHeaders);
+      keys[rk] = 1;
+      rowKeys.push(rk);
     }
     saveRecordedKeys(keys);
-    setStatus('Marked ' + idxs.length + ' row(s) as recorded (saved in this browser).', false);
-    refreshTable();
+    persistRecordedToApi(rowKeys, true, function () {
+      setStatus(
+        'Marked ' +
+          idxs.length +
+          ' row(s) as recorded' +
+          (state.dbConfigured ? ' (database updated where rows exist).' : ' (this browser).'),
+        false
+      );
+      refreshTable();
+    });
   }
 
   function onMarkUnrecordedClick() {
@@ -1108,17 +1396,23 @@
     }
     var keys = loadRecordedKeys();
     var map = getMapping();
+    var rowKeys = [];
     for (var i = 0; i < idxs.length; i++) {
       var row = state.offlineRows[idxs[i]];
       if (!row) continue;
-      delete keys[rowRecordKey(row, map, state.offlineHeaders)];
+      var rk = rowRecordKey(row, map, state.offlineHeaders);
+      delete keys[rk];
+      rowKeys.push(rk);
     }
     saveRecordedKeys(keys);
-    setStatus('Cleared recorded for ' + idxs.length + ' row(s).', false);
-    refreshTable();
+    persistRecordedToApi(rowKeys, false, function () {
+      setStatus('Cleared recorded for ' + idxs.length + ' row(s).', false);
+      refreshTable();
+    });
   }
 
   function wire() {
+    updateDbHint();
     $('donorFile').addEventListener('change', onDonorFile);
     $('offlineFile').addEventListener('change', onOfflineFile);
     $('btnRefresh').addEventListener('click', function () {
@@ -1149,8 +1443,23 @@
     if (bMR) bMR.addEventListener('click', onMarkRecordedClick);
     var bMU = $('btnMarkUnrecorded');
     if (bMU) bMU.addEventListener('click', onMarkUnrecordedClick);
+    var bSaveDb = $('btnSaveImportDb');
+    if (bSaveDb) bSaveDb.addEventListener('click', onSaveImportDbClick);
     var rowFilter = $('rowStatusFilter');
     if (rowFilter) rowFilter.addEventListener('change', refreshTable);
+    fetch('/api/db-status')
+      .then(function (r) {
+        return r.json();
+      })
+      .then(function (j) {
+        state.dbConfigured = !!(j && j.configured);
+        updateDbHint();
+        if (state.dbConfigured && state.offlineRows.length) scheduleDbLookup();
+      })
+      .catch(function () {
+        state.dbConfigured = false;
+        updateDbHint();
+      });
     $('formId').addEventListener('change', refreshTable);
     var noteIntro = $('noteIntro');
     if (noteIntro) {
@@ -1176,8 +1485,11 @@
       'colPayment',
       'colCheck',
       'colProduct',
+      'colDonorName',
+      'colMemo',
     ].forEach(function (id) {
-      $(id).addEventListener('change', refreshTable);
+      var el = $(id);
+      if (el) el.addEventListener('change', refreshTable);
     });
   }
 

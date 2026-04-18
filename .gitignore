@@ -1,6 +1,10 @@
 .DS_Store
 .vercel
 node_modules/
+.next/
+.env
+.env.local
+.env.*.local
 
 # macOS folder custom icon (often zero-byte)
 Icon
