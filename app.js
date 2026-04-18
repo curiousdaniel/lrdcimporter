@@ -105,8 +105,19 @@
     return out;
   }
 
+  function rowMaxCellLen(row) {
+    var m = 0;
+    for (var ri = 0; ri < (row || []).length; ri++) {
+      var L = String(row[ri] || '').trim().length;
+      if (L > m) m = L;
+    }
+    return m;
+  }
+
+  /** Keyword header row — ignore narrative rows (any cell very long). */
   function headerKeywordScore(row) {
     if (!row || !row.length) return 0;
+    if (rowMaxCellLen(row) > 48) return 0;
     var keys = [
       'email',
       'gross',
@@ -130,7 +141,7 @@
     var score = 0;
     for (var c = 0; c < row.length; c++) {
       var t = normHeader(String(row[c] || ''));
-      if (!t || t.length > 56) continue;
+      if (!t || t.length > 36) continue;
       for (var k = 0; k < keys.length; k++) {
         if (t.indexOf(keys[k]) !== -1) {
           score++;
@@ -141,30 +152,15 @@
     return score;
   }
 
-  function pickHeaderRowIndex(rows) {
-    var maxScan = Math.min(15, rows.length);
-    var best = 0;
-    var bestScore = -1;
-    for (var i = 0; i < maxScan; i++) {
-      var sc = headerKeywordScore(rows[i]);
-      if (sc > bestScore) {
-        bestScore = sc;
-        best = i;
-      }
-    }
-    if (bestScore < 3) return 0;
-    return best;
-  }
-
-  function rowsToHeaderRecords(rows) {
-    if (!rows || !rows.length) return { headers: [], records: [] };
-    var hi = pickHeaderRowIndex(rows);
-    var rawHeaders = rows[hi].map(function (h) {
+  function sliceRowsToRecords(rows, hi, maxRecords) {
+    maxRecords = maxRecords || 999999;
+    var rawHeaders = (rows[hi] || []).map(function (h) {
       return String(h || '').trim();
     });
     var headers = dedupeHeaders(rawHeaders);
+    if (!headers.length) return { headers: [], records: [] };
     var records = [];
-    for (var r = hi + 1; r < rows.length; r++) {
+    for (var r = hi + 1; r < rows.length && records.length < maxRecords; r++) {
       var cells = rows[r] || [];
       var empty = true;
       for (var c = 0; c < cells.length; c++) {
@@ -186,6 +182,51 @@
     return { headers: headers, records: records };
   }
 
+  function pickHeaderRowIndexKeywordFallback(rows) {
+    var maxScan = Math.min(15, rows.length);
+    var best = 0;
+    var bestScore = -1;
+    for (var i = 0; i < maxScan; i++) {
+      if (rowMaxCellLen(rows[i]) > 48) continue;
+      var sc = headerKeywordScore(rows[i]);
+      if (sc > bestScore) {
+        bestScore = sc;
+        best = i;
+      }
+    }
+    if (bestScore < 2) return 0;
+    return best;
+  }
+
+  /** Prefer the row below which the most cells look like donor emails (beats instruction banners). */
+  function pickHeaderRowIndex(rows) {
+    if (!rows || rows.length < 2) return 0;
+    var maxTry = Math.min(15, rows.length - 1);
+    var bestHi = 0;
+    var bestHits = -1;
+    var bestDensity = -1;
+    for (var hi = 0; hi < maxTry; hi++) {
+      var sr = sliceRowsToRecords(rows, hi, 400);
+      if (sr.records.length < 2) continue;
+      var inf = inferEmailColumnScore(sr.headers, sr.records);
+      var sample = Math.min(sr.records.length, 250);
+      var density = inf.hits / Math.max(1, sample);
+      if (inf.hits > bestHits || (inf.hits === bestHits && inf.hits > 0 && density > bestDensity)) {
+        bestHits = inf.hits;
+        bestHi = hi;
+        bestDensity = density;
+      }
+    }
+    if (bestHits >= 1) return bestHi;
+    return pickHeaderRowIndexKeywordFallback(rows);
+  }
+
+  function rowsToHeaderRecords(rows) {
+    if (!rows || !rows.length) return { headers: [], records: [] };
+    var hi = pickHeaderRowIndex(rows);
+    return sliceRowsToRecords(rows, hi, 999999);
+  }
+
   function looksLikeEmail(s) {
     var t = String(s == null ? '' : s)
       .trim()
@@ -197,7 +238,7 @@
   function inferEmailColumnScore(headers, records) {
     var bestH = '';
     var bestHits = -1;
-    var sampled = 0;
+    var sampledBest = 0;
     var limit = Math.min(250, records.length);
     for (var c = 0; c < headers.length; c++) {
       var h = headers[c];
@@ -209,13 +250,17 @@
         nonEmpty++;
         if (looksLikeEmail(v)) hits++;
       }
-      if (hits > bestHits) {
+      if (
+        hits > bestHits ||
+        (hits === bestHits && hits > 0 && nonEmpty > sampledBest)
+      ) {
         bestHits = hits;
         bestH = h;
-        sampled = nonEmpty;
+        sampledBest = nonEmpty;
       }
     }
-    return { header: bestH, hits: bestHits, sampled: sampled };
+    if (bestHits < 1) return { header: '', hits: 0, sampled: 0 };
+    return { header: bestH, hits: bestHits, sampled: sampledBest };
   }
 
   function findColSubstring(headers, patterns) {
