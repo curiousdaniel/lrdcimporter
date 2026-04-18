@@ -72,20 +72,7 @@
       rows.push(row);
     }
     if (!rows.length) return { headers: [], records: [] };
-    var headers = rows[0].map(function (h) {
-      return String(h).trim();
-    });
-    var records = [];
-    for (var r = 1; r < rows.length; r++) {
-      var cells = rows[r];
-      if (!cells.length || (cells.length === 1 && cells[0] === '')) continue;
-      var obj = {};
-      for (var c = 0; c < headers.length; c++) {
-        obj[headers[c]] = cells[c] != null ? String(cells[c]) : '';
-      }
-      records.push(obj);
-    }
-    return { headers: headers, records: records };
+    return rowsToHeaderRecords(rows);
   }
 
   function normHeader(h) {
@@ -105,6 +92,280 @@
       if (map[key]) return map[key];
     }
     return '';
+  }
+
+  function dedupeHeaders(raw) {
+    var counts = {};
+    var out = [];
+    for (var i = 0; i < raw.length; i++) {
+      var base = String(raw[i] || '').trim() || 'Column ' + (i + 1);
+      counts[base] = (counts[base] || 0) + 1;
+      out.push(counts[base] === 1 ? base : base + ' (' + counts[base] + ')');
+    }
+    return out;
+  }
+
+  function headerKeywordScore(row) {
+    if (!row || !row.length) return 0;
+    var keys = [
+      'email',
+      'gross',
+      'net',
+      'fee',
+      'date',
+      'time zone',
+      'timezone',
+      'currency',
+      'transaction',
+      'balance',
+      'status',
+      'type',
+      'name',
+      'item',
+      'quantity',
+      'address',
+      'payment',
+      'amount',
+    ];
+    var score = 0;
+    for (var c = 0; c < row.length; c++) {
+      var t = normHeader(String(row[c] || ''));
+      if (!t || t.length > 56) continue;
+      for (var k = 0; k < keys.length; k++) {
+        if (t.indexOf(keys[k]) !== -1) {
+          score++;
+          break;
+        }
+      }
+    }
+    return score;
+  }
+
+  function pickHeaderRowIndex(rows) {
+    var maxScan = Math.min(15, rows.length);
+    var best = 0;
+    var bestScore = -1;
+    for (var i = 0; i < maxScan; i++) {
+      var sc = headerKeywordScore(rows[i]);
+      if (sc > bestScore) {
+        bestScore = sc;
+        best = i;
+      }
+    }
+    if (bestScore < 3) return 0;
+    return best;
+  }
+
+  function rowsToHeaderRecords(rows) {
+    if (!rows || !rows.length) return { headers: [], records: [] };
+    var hi = pickHeaderRowIndex(rows);
+    var rawHeaders = rows[hi].map(function (h) {
+      return String(h || '').trim();
+    });
+    var headers = dedupeHeaders(rawHeaders);
+    var records = [];
+    for (var r = hi + 1; r < rows.length; r++) {
+      var cells = rows[r] || [];
+      var empty = true;
+      for (var c = 0; c < cells.length; c++) {
+        if (String(cells[c]).trim() !== '') {
+          empty = false;
+          break;
+        }
+      }
+      if (empty) continue;
+      var obj = {};
+      for (var j = 0; j < headers.length; j++) {
+        var key = headers[j];
+        var cell = cells[j];
+        if (cell instanceof Date) obj[key] = cell;
+        else obj[key] = cell != null ? String(cell) : '';
+      }
+      records.push(obj);
+    }
+    return { headers: headers, records: records };
+  }
+
+  function looksLikeEmail(s) {
+    var t = String(s == null ? '' : s)
+      .trim()
+      .toLowerCase();
+    if (t.indexOf('@') < 1) return false;
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(t);
+  }
+
+  function inferEmailColumnScore(headers, records) {
+    var bestH = '';
+    var bestHits = -1;
+    var sampled = 0;
+    var limit = Math.min(250, records.length);
+    for (var c = 0; c < headers.length; c++) {
+      var h = headers[c];
+      var hits = 0;
+      var nonEmpty = 0;
+      for (var r = 0; r < limit; r++) {
+        var v = records[r][h];
+        if (v == null || String(v).trim() === '') continue;
+        nonEmpty++;
+        if (looksLikeEmail(v)) hits++;
+      }
+      if (hits > bestHits) {
+        bestHits = hits;
+        bestH = h;
+        sampled = nonEmpty;
+      }
+    }
+    return { header: bestH, hits: bestHits, sampled: sampled };
+  }
+
+  function findColSubstring(headers, patterns) {
+    for (var p = 0; p < patterns.length; p++) {
+      var needle = normHeader(patterns[p]);
+      if (needle.length < 3) continue;
+      for (var i = 0; i < headers.length; i++) {
+        var nh = normHeader(headers[i]);
+        if (nh.indexOf(needle) !== -1) return headers[i];
+      }
+    }
+    return '';
+  }
+
+  function countEmailHitsInColumn(headers, records, colName) {
+    if (!colName) return 0;
+    var hits = 0;
+    var limit = Math.min(250, records.length);
+    for (var r = 0; r < limit; r++) {
+      if (looksLikeEmail(records[r][colName])) hits++;
+    }
+    return hits;
+  }
+
+  function chooseEmailColumn(headers, records) {
+    var exact = findCol(headers, ['email', 'e-mail', 'donor email']);
+    var sub = findColSubstring(headers, [
+      'from email address',
+      'from email',
+      'payer email',
+      'buyer email',
+      'paypal email',
+      'customer email',
+      'to email address',
+      'counterparty email',
+    ]);
+    var inf = inferEmailColumnScore(headers, records);
+    var exactHits = exact ? countEmailHitsInColumn(headers, records, exact) : 0;
+    var subHits = sub ? countEmailHitsInColumn(headers, records, sub) : 0;
+
+    if (inf.hits >= 3 && inf.hits >= exactHits && inf.hits >= subHits) return inf.header;
+    if (exact && exactHits >= 3) return exact;
+    if (sub && subHits >= 3) return sub;
+    if (exact) return exact;
+    if (sub) return sub;
+    if (inf.header && inf.hits >= 1) return inf.header;
+    return '';
+  }
+
+  function applySmartColumnDefaults(hdrs, records) {
+    fillSelect($('colEmail'), hdrs, []);
+    fillSelect($('colAmount'), hdrs, []);
+    fillSelect($('colDonationDate'), hdrs, []);
+    fillSelect($('colDepositDate'), hdrs, []);
+    fillSelect($('colPayment'), hdrs, []);
+    fillSelect($('colCheck'), hdrs, []);
+
+    var emailCol = chooseEmailColumn(hdrs, records);
+    if (emailCol) $('colEmail').value = emailCol;
+
+    var amountCol =
+      findCol(hdrs, ['amount', 'donation amount', 'gift amount', 'payment amount', 'gross', 'net']) ||
+      findColSubstring(hdrs, ['payment gross', 'total paid', 'gross amount']);
+    if (amountCol) $('colAmount').value = amountCol;
+
+    var donationDateCol =
+      findCol(hdrs, [
+        'donation date',
+        'donation_date',
+        'date donated',
+        'gift date',
+        'transaction date',
+        'payment date',
+        'completed date',
+      ]) || findColSubstring(hdrs, ['transaction date', 'payment date', 'donation date']);
+    if (donationDateCol) $('colDonationDate').value = donationDateCol;
+
+    var depositCol =
+      findCol(hdrs, [
+        'deposit date',
+        'deposit_date',
+        'bank date',
+        'date deposited',
+      ]) || findColSubstring(hdrs, ['deposit date', 'bank date']);
+    if (depositCol) $('colDepositDate').value = depositCol;
+
+    var payCol =
+      findCol(hdrs, [
+        'payment',
+        'payment type',
+        'method',
+        'donation_type',
+        'type',
+        'txn type',
+        'transaction type',
+      ]) || findColSubstring(hdrs, ['payment type', 'transaction type', 'txn type']);
+    if (payCol) $('colPayment').value = payCol;
+
+    var checkCol =
+      findCol(hdrs, ['check', 'check number', 'check #', 'check_no', 'check no']) ||
+      findColSubstring(hdrs, ['check number', 'check #']);
+    if (checkCol) $('colCheck').value = checkCol;
+  }
+
+  function updateMappingHints() {
+    var el = $('mappingHints');
+    if (!el) return;
+    var map = getMapping();
+    var rows = state.offlineRows;
+    if (!rows.length) {
+      el.hidden = true;
+      return;
+    }
+    var lines = [];
+    var warn = false;
+    if (map.email) {
+      var sample = rows[0] ? rows[0][map.email] : '';
+      var preview = String(sample == null ? '' : sample).trim();
+      if (preview.length > 80) preview = preview.slice(0, 80) + '…';
+      lines.push('Email column “' + map.email + '” — first row value: ' + (preview || '(empty)'));
+      if (preview && !looksLikeEmail(preview)) {
+        lines.push('That does not look like an email address. Choose the column that contains donor emails (e.g. From Email Address).');
+        warn = true;
+      }
+    } else {
+      lines.push('No donor email column selected.');
+      warn = true;
+    }
+    var matched = 0;
+    var checked = Math.min(80, rows.length);
+    for (var i = 0; i < checked; i++) {
+      var em = map.email ? rows[i][map.email] : '';
+      var res = resolveSupporterId(em);
+      if (res.id != null) matched++;
+    }
+    lines.push(
+      'Donor match in first ' +
+        checked +
+        ' rows: ' +
+        matched +
+        ' of ' +
+        checked +
+        ' (needs Donorbox export loaded with matching emails).'
+    );
+    if (matched === 0 && state.donorByEmail && state.donorByEmail.size) {
+      warn = true;
+    }
+    el.textContent = lines.join('\n');
+    el.hidden = false;
+    el.className = 'meta' + (warn ? ' warn' : '');
   }
 
   function buildDonorIndex(headers, records) {
@@ -265,30 +526,7 @@
       defval: '',
     });
     if (!rows.length) return { headers: [], records: [] };
-    var headers = rows[0].map(function (h) {
-      return String(h).trim();
-    });
-    var records = [];
-    for (var r = 1; r < rows.length; r++) {
-      var cells = rows[r] || [];
-      var empty = true;
-      for (var c = 0; c < cells.length; c++) {
-        if (String(cells[c]).trim() !== '') {
-          empty = false;
-          break;
-        }
-      }
-      if (empty) continue;
-      var obj = {};
-      for (var j = 0; j < headers.length; j++) {
-        var key = headers[j] || 'Column' + j;
-        var cell = cells[j];
-        if (cell instanceof Date) obj[key] = cell;
-        else obj[key] = cell != null ? String(cell) : '';
-      }
-      records.push(obj);
-    }
-    return { headers: headers, records: records };
+    return rowsToHeaderRecords(rows);
   }
 
   function onOfflineFile(ev) {
@@ -318,31 +556,8 @@
     state.offlineHeaders = parsed.headers;
     state.offlineRows = parsed.records;
     $('offlineCount').textContent = String(parsed.records.length) + ' rows';
-    var hdrs = parsed.headers;
-    fillSelect($('colEmail'), hdrs, ['email', 'e-mail', 'donor email']);
-    fillSelect($('colAmount'), hdrs, ['amount', 'donation amount', 'gift amount']);
-    fillSelect($('colDonationDate'), hdrs, [
-      'donation date',
-      'donation_date',
-      'date donated',
-      'gift date',
-      'date',
-    ]);
-    fillSelect($('colDepositDate'), hdrs, [
-      'deposit date',
-      'deposit_date',
-      'bank date',
-      'date deposited',
-    ]);
-    fillSelect($('colPayment'), hdrs, [
-      'payment',
-      'payment type',
-      'method',
-      'donation_type',
-      'type',
-    ]);
-    fillSelect($('colCheck'), hdrs, ['check', 'check number', 'check #', 'check_no', 'check no']);
-    setStatus('Offline file loaded. Map columns if needed, then refresh links.', false);
+    applySmartColumnDefaults(parsed.headers, parsed.records);
+    setStatus('Offline file loaded. Check column mapping hints below, then Refresh links.', false);
     refreshTable();
   }
 
@@ -448,6 +663,7 @@
       tr.appendChild(td4);
       tbody.appendChild(tr);
     }
+    updateMappingHints();
   }
 
   function openNextRowInOrder() {
@@ -473,6 +689,7 @@
     $('offlineFile').addEventListener('change', onOfflineFile);
     $('btnRefresh').addEventListener('click', function () {
       refreshTable();
+      updateMappingHints();
       setStatus('Links refreshed.', false);
     });
     $('btnOpenNext').addEventListener('click', openNextRowInOrder);

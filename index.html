@@ -105,6 +105,20 @@
         color: #555;
         margin-top: 0.35rem;
       }
+      #mappingHints {
+        margin-top: 0.65rem;
+        padding: 0.55rem 0.65rem;
+        background: #f7f7f8;
+        border: 1px solid #e2e2e4;
+        border-radius: 6px;
+        font-size: 0.82rem;
+        white-space: pre-wrap;
+      }
+      #mappingHints.warn {
+        border-color: #ddb;
+        background: #fffbeb;
+        color: #5c4a00;
+      }
     </style>
     <script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
   </head>
@@ -151,6 +165,10 @@
         <div>
           <label for="colEmail">Donor email (match to export)</label>
           <select id="colEmail"></select>
+          <p class="meta">
+            Must be a column of <strong>email addresses</strong> (not instructions or receipt text). PayPal exports
+            often have a title row; the tool tries to skip it. If links stay disabled, pick the correct column here.
+          </p>
         </div>
         <div>
           <label for="colAmount">Amount</label>
@@ -176,6 +194,7 @@
       <p class="meta">
         Org comments are filled with JSON of the full row. If the note is very long, it may be truncated so the URL stays within browser limits.
       </p>
+      <div id="mappingHints" class="meta" hidden></div>
       <button type="button" id="btnRefresh">Refresh links</button>
       <button type="button" id="btnOpenNext">Open next row (in table order)</button>
       <div id="status"></div>
