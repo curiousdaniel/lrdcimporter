@@ -12,6 +12,7 @@
     offlineRows: [],
     formId: '277791',
     nextRowIndex: 0,
+    rowUrls: [],
   };
 
   function $(id) {
@@ -734,10 +735,25 @@
     };
   }
 
+  function syncSelectAllCheckbox() {
+    var master = $('selectAllRows');
+    if (!master) return;
+    var boxes = document.querySelectorAll('input.row-select:not(:disabled)');
+    var checked = document.querySelectorAll('input.row-select:checked:not(:disabled)');
+    if (!boxes.length) {
+      master.checked = false;
+      master.indeterminate = false;
+      return;
+    }
+    master.checked = checked.length === boxes.length;
+    master.indeterminate = checked.length > 0 && checked.length < boxes.length;
+  }
+
   function refreshTable() {
     var tbody = $('rowsBody');
     tbody.innerHTML = '';
     state.nextRowIndex = 0;
+    state.rowUrls = [];
     var map = getMapping();
     state.formId = ($('formId').value || '277791').trim();
     for (var i = 0; i < state.offlineRows.length; i++) {
@@ -749,6 +765,17 @@
       var payload = buildPayloadForRow(row, map);
       var ph = payloadHash(payload);
       var url = res.id ? buildDonorUrl(res.id, ph.enc) : '';
+      state.rowUrls[i] = url;
+
+      var tdSel = document.createElement('td');
+      tdSel.className = 'col-sel';
+      var cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.className = 'row-select';
+      cb.dataset.rowIndex = String(i);
+      cb.disabled = !url;
+      cb.setAttribute('aria-label', 'Select row ' + (i + 1));
+      tdSel.appendChild(cb);
 
       var td0 = document.createElement('td');
       td0.textContent = String(i + 1);
@@ -762,6 +789,7 @@
       var td4 = document.createElement('td');
       var btnOpen = document.createElement('button');
       btnOpen.type = 'button';
+      btnOpen.className = 'open-row';
       btnOpen.textContent = 'Open';
       btnOpen.disabled = !url;
       btnOpen.onclick = function (u) {
@@ -788,6 +816,7 @@
       td4.appendChild(btnOpen);
       td4.appendChild(document.createTextNode(' '));
       td4.appendChild(btnCopy);
+      tr.appendChild(tdSel);
       tr.appendChild(td0);
       tr.appendChild(td1);
       tr.appendChild(td2);
@@ -795,6 +824,7 @@
       tr.appendChild(td4);
       tbody.appendChild(tr);
     }
+    syncSelectAllCheckbox();
     updateMappingHints();
   }
 
@@ -804,7 +834,7 @@
     var started = state.nextRowIndex;
     while (state.nextRowIndex < rows.length) {
       var tr = rows[state.nextRowIndex];
-      var btnOpen = tr.querySelector('button');
+      var btnOpen = tr.querySelector('button.open-row');
       state.nextRowIndex++;
       if (btnOpen && !btnOpen.disabled) {
         btnOpen.click();
@@ -816,6 +846,71 @@
     setStatus('No further rows with a resolvable supporter Id (searched from row ' + (started + 1) + '). Counter reset.', false);
   }
 
+  function openUrlsInTabs(urls) {
+    var list = urls.filter(Boolean);
+    if (!list.length) return 0;
+    var delayMs = 280;
+    for (var j = 0; j < list.length; j++) {
+      (function (u, k) {
+        setTimeout(function () {
+          window.open(u, '_blank', 'noopener,noreferrer');
+        }, k * delayMs);
+      })(list[j], j);
+    }
+    return list.length;
+  }
+
+  function onSelectAllRowsChange(ev) {
+    var on = ev.target.checked;
+    document.querySelectorAll('input.row-select:not(:disabled)').forEach(function (cb) {
+      cb.checked = on;
+    });
+  }
+
+  function onSelectAllValidClick() {
+    document.querySelectorAll('input.row-select:not(:disabled)').forEach(function (cb) {
+      cb.checked = true;
+    });
+    syncSelectAllCheckbox();
+    setStatus('Selected all rows with valid supporter links.', false);
+  }
+
+  function onClearSelectionClick() {
+    document.querySelectorAll('input.row-select').forEach(function (cb) {
+      cb.checked = false;
+    });
+    var master = $('selectAllRows');
+    if (master) {
+      master.checked = false;
+      master.indeterminate = false;
+    }
+    setStatus('Selection cleared.', false);
+  }
+
+  function onOpenSelectedTabsClick() {
+    var urls = [];
+    document.querySelectorAll('input.row-select:checked').forEach(function (cb) {
+      var idx = parseInt(cb.dataset.rowIndex, 10);
+      if (!isNaN(idx) && state.rowUrls[idx]) urls.push(state.rowUrls[idx]);
+    });
+    if (!urls.length) {
+      setStatus('Select at least one row with a valid link (checkbox), or use “Select all with valid links”.', true);
+      return;
+    }
+    var n = openUrlsInTabs(urls);
+    setStatus('Queued ' + n + ' tab(s). Allow pop-ups for this page if the browser blocks some.', false);
+  }
+
+  function onOpenAllValidTabsClick() {
+    var urls = state.rowUrls.filter(Boolean);
+    if (!urls.length) {
+      setStatus('No rows with a resolvable supporter Id.', true);
+      return;
+    }
+    var n = openUrlsInTabs(urls);
+    setStatus('Queued ' + n + ' tab(s) (all valid rows). Allow pop-ups if some are blocked.', false);
+  }
+
   function wire() {
     $('donorFile').addEventListener('change', onDonorFile);
     $('offlineFile').addEventListener('change', onOfflineFile);
@@ -825,6 +920,24 @@
       setStatus('Links refreshed.', false);
     });
     $('btnOpenNext').addEventListener('click', openNextRowInOrder);
+    var selAll = $('selectAllRows');
+    if (selAll) selAll.addEventListener('change', onSelectAllRowsChange);
+    var tbody = $('rowsBody');
+    if (tbody) {
+      tbody.addEventListener('change', function (ev) {
+        if (ev.target && ev.target.classList && ev.target.classList.contains('row-select')) {
+          syncSelectAllCheckbox();
+        }
+      });
+    }
+    var bSel = $('btnSelectAllValid');
+    if (bSel) bSel.addEventListener('click', onSelectAllValidClick);
+    var bClr = $('btnClearSelection');
+    if (bClr) bClr.addEventListener('click', onClearSelectionClick);
+    var bOS = $('btnOpenSelectedTabs');
+    if (bOS) bOS.addEventListener('click', onOpenSelectedTabsClick);
+    var bOA = $('btnOpenAllValidTabs');
+    if (bOA) bOA.addEventListener('click', onOpenAllValidTabsClick);
     $('formId').addEventListener('change', refreshTable);
     var noteIntro = $('noteIntro');
     if (noteIntro) {

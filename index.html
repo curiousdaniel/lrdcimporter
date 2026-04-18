@@ -105,6 +105,26 @@
         color: #555;
         margin-top: 0.35rem;
       }
+      .row-toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem 0.6rem;
+        margin: 0.65rem 0 0.25rem;
+        align-items: center;
+      }
+      .row-toolbar .sep {
+        color: #999;
+        user-select: none;
+      }
+      th.col-sel,
+      td.col-sel {
+        width: 2.25rem;
+        text-align: center;
+        vertical-align: middle;
+      }
+      th.col-sel input {
+        margin: 0;
+      }
       #mappingHints {
         margin-top: 0.65rem;
         padding: 0.55rem 0.65rem;
@@ -209,9 +229,22 @@
 
     <section>
       <h2>4. Rows</h2>
+      <p class="meta">
+        Use checkboxes to choose rows, then open them in separate tabs. Browsers may block many pop-ups at once—allow pop-ups for this site if needed.
+      </p>
+      <div class="row-toolbar">
+        <button type="button" id="btnSelectAllValid">Select all with valid links</button>
+        <button type="button" id="btnClearSelection">Clear selection</button>
+        <span class="sep">|</span>
+        <button type="button" id="btnOpenSelectedTabs">Open selected in new tabs</button>
+        <button type="button" id="btnOpenAllValidTabs">Open all with valid links in new tabs</button>
+      </div>
       <table>
         <thead>
           <tr>
+            <th class="col-sel" title="Select all rows that have a link">
+              <input type="checkbox" id="selectAllRows" aria-label="Select all valid rows" />
+            </th>
             <th>#</th>
             <th>Email</th>
             <th>Supporter Id</th>
