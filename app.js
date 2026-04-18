@@ -3,6 +3,7 @@
   'use strict';
 
   var MAX_HASH_PAYLOAD_CHARS = 14000;
+  var RECORDED_LS_KEY = 'dbOfflineRecordedKeys';
 
   var state = {
     donorRows: [],
@@ -629,6 +630,72 @@
       .join('\t');
   }
 
+  function hashStr(s) {
+    var h = 5381;
+    for (var i = 0; i < s.length; i++) {
+      h = ((h << 5) + h) ^ s.charCodeAt(i);
+    }
+    return (h >>> 0).toString(36);
+  }
+
+  /** Stable id for “recorded” state: supporter id, key fields, and row content fingerprint. */
+  function rowRecordKey(row, map, headers) {
+    var email = map.email ? String(row[map.email] || '').trim().toLowerCase() : '';
+    var amount = map.amount ? String(row[map.amount] || '').replace(/[$,]/g, '').trim() : '';
+    var dd = map.donationDate ? toISODate(row[map.donationDate]) : '';
+    var dep = map.depositDate ? toISODate(row[map.depositDate]) : '';
+    var chk = map.check ? String(row[map.check] || '').trim() : '';
+    var res = resolveSupporterId(map.email ? row[map.email] : '');
+    var sid = res.id != null ? String(res.id) : '';
+    var tsv = rowAsRawTsv(headers, row);
+    var fp = hashStr(tsv.slice(0, 5000));
+    return sid + '|' + email + '|' + dd + '|' + dep + '|' + amount + '|' + chk + '|' + fp;
+  }
+
+  function loadRecordedKeys() {
+    try {
+      var raw = localStorage.getItem(RECORDED_LS_KEY);
+      if (!raw) return {};
+      var data = JSON.parse(raw);
+      if (data && typeof data === 'object' && data.keys && typeof data.keys === 'object') {
+        return data.keys;
+      }
+    } catch (e) {
+      /* ignore */
+    }
+    return {};
+  }
+
+  function saveRecordedKeys(keys) {
+    try {
+      localStorage.setItem(RECORDED_LS_KEY, JSON.stringify({ v: '1', keys: keys }));
+    } catch (e) {
+      /* ignore */
+    }
+  }
+
+  function updateRowFilterSummary(total, visibleCount, totalRecorded, filterVal) {
+    var el = $('rowFilterSummary');
+    if (!el) return;
+    if (!total) {
+      el.hidden = true;
+      return;
+    }
+    var label =
+      filterVal === 'recorded' ? 'Recorded' : filterVal === 'not_recorded' ? 'Not recorded' : 'All rows';
+    el.textContent =
+      'Showing ' +
+      visibleCount +
+      ' of ' +
+      total +
+      ' rows (filter: ' +
+      label +
+      '). ' +
+      totalRecorded +
+      ' marked recorded in this browser.';
+    el.hidden = false;
+  }
+
   /** Text block for Donorbox org / donation notes. */
   function buildOrgComments(headers, row, formId) {
     var intro = '';
@@ -792,8 +859,10 @@
   function syncSelectAllCheckbox() {
     var master = $('selectAllRows');
     if (!master) return;
-    var boxes = document.querySelectorAll('input.row-select:not(:disabled)');
-    var checked = document.querySelectorAll('input.row-select:checked:not(:disabled)');
+    var boxes = document.querySelectorAll('#rowsBody tr:not(.row-filtered-out) input.row-select');
+    var checked = document.querySelectorAll(
+      '#rowsBody tr:not(.row-filtered-out) input.row-select:checked'
+    );
     if (!boxes.length) {
       master.checked = false;
       master.indeterminate = false;
@@ -810,10 +879,36 @@
     state.rowUrls = [];
     var map = getMapping();
     state.formId = ($('formId').value || '277791').trim();
+    var recordedKeys = loadRecordedKeys();
+    var filterEl = $('rowStatusFilter');
+    var filterVal = (filterEl && filterEl.value) || 'all';
+    var total = state.offlineRows.length;
+    var rowMeta = [];
+    var totalRecorded = 0;
+    for (var m = 0; m < total; m++) {
+      var rowM = state.offlineRows[m];
+      var k = rowRecordKey(rowM, map, state.offlineHeaders);
+      var rec = !!recordedKeys[k];
+      if (rec) totalRecorded++;
+      var show =
+        filterVal === 'all' ||
+        (filterVal === 'recorded' && rec) ||
+        (filterVal === 'not_recorded' && !rec);
+      rowMeta.push({ key: k, recorded: rec, show: show });
+    }
+    var visibleCount = 0;
+    for (var vc = 0; vc < rowMeta.length; vc++) {
+      if (rowMeta[vc].show) visibleCount++;
+    }
+    updateRowFilterSummary(total, visibleCount, totalRecorded, filterVal);
+
     for (var i = 0; i < state.offlineRows.length; i++) {
       var row = state.offlineRows[i];
       var tr = document.createElement('tr');
       tr.dataset.rowIndex = String(i);
+      var meta = rowMeta[i];
+      if (!meta.show) tr.classList.add('row-filtered-out');
+
       var email = map.email ? row[map.email] : '';
       var res = resolveSupporterId(email);
       var payload = buildPayloadForRow(row, map);
@@ -827,12 +922,16 @@
       cb.type = 'checkbox';
       cb.className = 'row-select';
       cb.dataset.rowIndex = String(i);
-      cb.disabled = !url;
       cb.setAttribute('aria-label', 'Select row ' + (i + 1));
       tdSel.appendChild(cb);
 
       var td0 = document.createElement('td');
       td0.textContent = String(i + 1);
+
+      var tdRec = document.createElement('td');
+      tdRec.className = 'col-recorded' + (meta.recorded ? ' recorded-yes' : ' recorded-no');
+      tdRec.textContent = meta.recorded ? 'Yes' : '—';
+
       var td1 = document.createElement('td');
       td1.textContent = String(email || '');
       var td2 = document.createElement('td');
@@ -872,6 +971,7 @@
       td4.appendChild(btnCopy);
       tr.appendChild(tdSel);
       tr.appendChild(td0);
+      tr.appendChild(tdRec);
       tr.appendChild(td1);
       tr.appendChild(td2);
       tr.appendChild(td3);
@@ -888,8 +988,9 @@
     var started = state.nextRowIndex;
     while (state.nextRowIndex < rows.length) {
       var tr = rows[state.nextRowIndex];
-      var btnOpen = tr.querySelector('button.open-row');
       state.nextRowIndex++;
+      if (tr.classList.contains('row-filtered-out')) continue;
+      var btnOpen = tr.querySelector('button.open-row');
       if (btnOpen && !btnOpen.disabled) {
         btnOpen.click();
         setStatus('Opened row #' + (parseInt(tr.dataset.rowIndex, 10) + 1) + '.', false);
@@ -916,21 +1017,24 @@
 
   function onSelectAllRowsChange(ev) {
     var on = ev.target.checked;
-    document.querySelectorAll('input.row-select:not(:disabled)').forEach(function (cb) {
+    document.querySelectorAll('#rowsBody tr:not(.row-filtered-out) input.row-select').forEach(function (cb) {
       cb.checked = on;
     });
   }
 
   function onSelectAllValidClick() {
-    document.querySelectorAll('input.row-select:not(:disabled)').forEach(function (cb) {
-      cb.checked = true;
+    document.querySelectorAll('#rowsBody tr:not(.row-filtered-out)').forEach(function (tr) {
+      var idx = parseInt(tr.dataset.rowIndex, 10);
+      var cb = tr.querySelector('input.row-select');
+      if (!cb || isNaN(idx)) return;
+      cb.checked = !!state.rowUrls[idx];
     });
     syncSelectAllCheckbox();
     setStatus('Selected all rows with valid supporter links.', false);
   }
 
   function onClearSelectionClick() {
-    document.querySelectorAll('input.row-select').forEach(function (cb) {
+    document.querySelectorAll('#rowsBody input.row-select').forEach(function (cb) {
       cb.checked = false;
     });
     var master = $('selectAllRows');
@@ -956,13 +1060,62 @@
   }
 
   function onOpenAllValidTabsClick() {
-    var urls = state.rowUrls.filter(Boolean);
+    var urls = [];
+    document.querySelectorAll('#rowsBody tr:not(.row-filtered-out)').forEach(function (tr) {
+      var idx = parseInt(tr.dataset.rowIndex, 10);
+      if (!isNaN(idx) && state.rowUrls[idx]) urls.push(state.rowUrls[idx]);
+    });
     if (!urls.length) {
-      setStatus('No rows with a resolvable supporter Id.', true);
+      setStatus('No visible rows with a resolvable supporter Id (check the filter).', true);
       return;
     }
     var n = openUrlsInTabs(urls);
-    setStatus('Queued ' + n + ' tab(s) (all valid rows). Allow pop-ups if some are blocked.', false);
+    setStatus('Queued ' + n + ' tab(s) (visible rows with links). Allow pop-ups if some are blocked.', false);
+  }
+
+  function getSelectedRowIndexes() {
+    var out = [];
+    document.querySelectorAll('#rowsBody input.row-select:checked').forEach(function (cb) {
+      var idx = parseInt(cb.dataset.rowIndex, 10);
+      if (!isNaN(idx)) out.push(idx);
+    });
+    return out;
+  }
+
+  function onMarkRecordedClick() {
+    var idxs = getSelectedRowIndexes();
+    if (!idxs.length) {
+      setStatus('Select at least one row (checkbox), then mark as recorded.', true);
+      return;
+    }
+    var keys = loadRecordedKeys();
+    var map = getMapping();
+    for (var i = 0; i < idxs.length; i++) {
+      var row = state.offlineRows[idxs[i]];
+      if (!row) continue;
+      keys[rowRecordKey(row, map, state.offlineHeaders)] = 1;
+    }
+    saveRecordedKeys(keys);
+    setStatus('Marked ' + idxs.length + ' row(s) as recorded (saved in this browser).', false);
+    refreshTable();
+  }
+
+  function onMarkUnrecordedClick() {
+    var idxs = getSelectedRowIndexes();
+    if (!idxs.length) {
+      setStatus('Select at least one row (checkbox), then clear recorded.', true);
+      return;
+    }
+    var keys = loadRecordedKeys();
+    var map = getMapping();
+    for (var i = 0; i < idxs.length; i++) {
+      var row = state.offlineRows[idxs[i]];
+      if (!row) continue;
+      delete keys[rowRecordKey(row, map, state.offlineHeaders)];
+    }
+    saveRecordedKeys(keys);
+    setStatus('Cleared recorded for ' + idxs.length + ' row(s).', false);
+    refreshTable();
   }
 
   function wire() {
@@ -992,6 +1145,12 @@
     if (bOS) bOS.addEventListener('click', onOpenSelectedTabsClick);
     var bOA = $('btnOpenAllValidTabs');
     if (bOA) bOA.addEventListener('click', onOpenAllValidTabsClick);
+    var bMR = $('btnMarkRecorded');
+    if (bMR) bMR.addEventListener('click', onMarkRecordedClick);
+    var bMU = $('btnMarkUnrecorded');
+    if (bMU) bMU.addEventListener('click', onMarkUnrecordedClick);
+    var rowFilter = $('rowStatusFilter');
+    if (rowFilter) rowFilter.addEventListener('change', refreshTable);
     $('formId').addEventListener('change', refreshTable);
     var noteIntro = $('noteIntro');
     if (noteIntro) {

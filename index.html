@@ -139,6 +139,37 @@
         background: #fffbeb;
         color: #5c4a00;
       }
+      tr.row-filtered-out {
+        display: none;
+      }
+      th.col-recorded,
+      td.col-recorded {
+        width: 5.75rem;
+        white-space: nowrap;
+        text-align: center;
+      }
+      .recorded-yes {
+        color: #0a6b2a;
+        font-weight: 600;
+      }
+      .recorded-no {
+        color: #666;
+      }
+      #rowStatusFilter {
+        width: auto;
+        max-width: 14rem;
+        min-width: 10.5rem;
+      }
+      label.inline-filter {
+        display: inline-block;
+        margin: 0;
+        font-size: 0.85rem;
+        font-weight: 500;
+        align-self: center;
+      }
+      #rowFilterSummary {
+        margin-top: 0.35rem;
+      }
     </style>
     <script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
   </head>
@@ -237,7 +268,7 @@
     <section>
       <h2>4. Rows</h2>
       <p class="meta">
-        Use checkboxes to choose rows, then open them in separate tabs. Browsers may block many pop-ups at once—allow pop-ups for this site if needed.
+        Use checkboxes to choose rows, then open them in new tabs or mark them as recorded. “Recorded” is stored in this browser only (localStorage) so you can filter progress. Browsers may block many pop-ups at once—allow pop-ups for this site if needed.
       </p>
       <div class="row-toolbar">
         <button type="button" id="btnSelectAllValid">Select all with valid links</button>
@@ -245,14 +276,26 @@
         <span class="sep">|</span>
         <button type="button" id="btnOpenSelectedTabs">Open selected in new tabs</button>
         <button type="button" id="btnOpenAllValidTabs">Open all with valid links in new tabs</button>
+        <span class="sep">|</span>
+        <button type="button" id="btnMarkRecorded">Mark selected as recorded</button>
+        <button type="button" id="btnMarkUnrecorded">Mark selected as not recorded</button>
+        <span class="sep">|</span>
+        <label class="inline-filter" for="rowStatusFilter">Show</label>
+        <select id="rowStatusFilter" aria-label="Filter rows by recorded status">
+          <option value="all">All rows</option>
+          <option value="not_recorded">Not recorded</option>
+          <option value="recorded">Recorded</option>
+        </select>
       </div>
+      <p class="meta" id="rowFilterSummary" hidden></p>
       <table>
         <thead>
           <tr>
-            <th class="col-sel" title="Select all rows that have a link">
-              <input type="checkbox" id="selectAllRows" aria-label="Select all valid rows" />
+            <th class="col-sel" title="Select rows (all rows; opening still needs a valid supporter link)">
+              <input type="checkbox" id="selectAllRows" aria-label="Select all visible rows" />
             </th>
             <th>#</th>
+            <th class="col-recorded">Recorded</th>
             <th>Email</th>
             <th>Supporter Id</th>
             <th>URL note</th>
