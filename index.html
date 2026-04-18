@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Donorbox offline donation launcher</title>
+    <style>
+      :root {
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        color: #1a1a1a;
+        background: #f4f4f5;
+        line-height: 1.45;
+      }
+      body {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 1.25rem 1rem 2rem;
+      }
+      h1 {
+        font-size: 1.35rem;
+        font-weight: 600;
+        margin: 0 0 0.5rem;
+      }
+      .sub {
+        font-size: 0.9rem;
+        color: #444;
+        margin-bottom: 1.25rem;
+      }
+      section {
+        background: #fff;
+        border: 1px solid #e0e0e0;
+        border-radius: 8px;
+        padding: 1rem 1.1rem;
+        margin-bottom: 1rem;
+      }
+      section h2 {
+        font-size: 1rem;
+        margin: 0 0 0.75rem;
+        font-weight: 600;
+      }
+      label {
+        display: block;
+        font-size: 0.8rem;
+        font-weight: 500;
+        margin: 0.35rem 0 0.15rem;
+      }
+      input[type='text'],
+      select {
+        width: 100%;
+        max-width: 420px;
+        padding: 0.35rem 0.5rem;
+        font-size: 0.9rem;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        box-sizing: border-box;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+        gap: 0.5rem 1rem;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.85rem;
+      }
+      th,
+      td {
+        border: 1px solid #e0e0e0;
+        padding: 0.35rem 0.5rem;
+        text-align: left;
+        vertical-align: middle;
+      }
+      th {
+        background: #fafafa;
+        font-weight: 600;
+      }
+      button {
+        font-size: 0.85rem;
+        padding: 0.3rem 0.55rem;
+        border-radius: 4px;
+        border: 1px solid #888;
+        background: #fff;
+        cursor: pointer;
+      }
+      button:hover:not(:disabled) {
+        background: #f0f0f0;
+      }
+      button:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+      #status {
+        margin-top: 0.75rem;
+        font-size: 0.9rem;
+      }
+      ol.steps {
+        margin: 0;
+        padding-left: 1.2rem;
+        font-size: 0.88rem;
+        color: #333;
+      }
+      .meta {
+        font-size: 0.85rem;
+        color: #555;
+        margin-top: 0.35rem;
+      }
+    </style>
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
+  </head>
+  <body>
+    <h1>Donorbox offline donation launcher</h1>
+    <p class="sub">
+      Donor lists and offline spreadsheets stay in your browser (nothing is uploaded to this server).
+      Install the userscript, then use this page on your
+      <strong>Vercel deployment</strong> or locally from the repo root. Complete captcha and save on Donorbox
+      manually if prompted.
+    </p>
+
+    <section>
+      <h2>Setup</h2>
+      <ol class="steps">
+        <li>
+          Install Tampermonkey / Violentmonkey, then add the script from
+          <a href="userscripts/donorbox-offline-prefill.user.js"><code>userscripts/donorbox-offline-prefill.user.js</code></a>
+          (open the link and choose “Install” in your manager, or paste the file contents).
+        </li>
+        <li>Log in to Donorbox in the same browser.</li>
+        <li>Use this page at your production URL (for example your Vercel <code>*.vercel.app</code> domain).</li>
+      </ol>
+    </section>
+
+    <section>
+      <h2>1. Donor export (CSV)</h2>
+      <p class="meta">Expected columns include <code>Email</code> and <code>Id</code> (case-insensitive). Duplicate emails use the highest numeric Id.</p>
+      <input type="file" id="donorFile" accept=".csv,text/csv" />
+      <p class="meta" id="donorCount">No file loaded.</p>
+    </section>
+
+    <section>
+      <h2>2. Offline donations (CSV or Excel)</h2>
+      <input type="file" id="offlineFile" accept=".csv,.xlsx,.xls,text/csv" />
+      <p class="meta" id="offlineCount">No file loaded.</p>
+      <label for="formId">Form ID (query param <code>form_id</code>)</label>
+      <input type="text" id="formId" value="277791" />
+    </section>
+
+    <section>
+      <h2>3. Column mapping</h2>
+      <div class="grid">
+        <div>
+          <label for="colEmail">Donor email (match to export)</label>
+          <select id="colEmail"></select>
+        </div>
+        <div>
+          <label for="colAmount">Amount</label>
+          <select id="colAmount"></select>
+        </div>
+        <div>
+          <label for="colDonationDate">Donation date</label>
+          <select id="colDonationDate"></select>
+        </div>
+        <div>
+          <label for="colDepositDate">Deposit date</label>
+          <select id="colDepositDate"></select>
+        </div>
+        <div>
+          <label for="colPayment">Payment type (<code>check</code>, <code>paypal</code>, …)</label>
+          <select id="colPayment"></select>
+        </div>
+        <div>
+          <label for="colCheck">Check number (optional)</label>
+          <select id="colCheck"></select>
+        </div>
+      </div>
+      <p class="meta">
+        Org comments are filled with JSON of the full row. If the note is very long, it may be truncated so the URL stays within browser limits.
+      </p>
+      <button type="button" id="btnRefresh">Refresh links</button>
+      <button type="button" id="btnOpenNext">Open next row (in table order)</button>
+      <div id="status"></div>
+    </section>
+
+    <section>
+      <h2>4. Rows</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Email</th>
+            <th>Supporter Id</th>
+            <th>URL note</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="rowsBody"></tbody>
+      </table>
+    </section>
+
+    <script src="app.js"></script>
+  </body>
+</html>

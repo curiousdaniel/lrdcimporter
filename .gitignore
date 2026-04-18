@@ -1,0 +1,6 @@
+.DS_Store
+.vercel
+node_modules/
+
+# macOS folder custom icon (often zero-byte)
+Icon

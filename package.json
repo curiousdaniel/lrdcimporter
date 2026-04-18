@@ -1,0 +1,5 @@
+{
+  "name": "lrdc-offline-importer",
+  "private": true,
+  "description": "Static Donorbox offline donation launcher (Vercel)"
+}
