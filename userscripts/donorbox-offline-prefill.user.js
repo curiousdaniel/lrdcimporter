@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Donorbox offline donation prefill
 // @namespace    lrdc-offline-importer
-// @version      1.0.4
+// @version      1.0.5
 // @description  Fills the Donorbox org-admin offline donation form from #dbOffline= / #!dbOffline= base64 JSON (flat or nested donation object). You must be logged in; complete captcha and submit manually if required.
 // @match        https://donorbox.org/org_admin/supporters/*/donor_donations/new*
 // @match        https://*.donorbox.org/org_admin/supporters/*/donor_donations/new*
@@ -248,28 +248,78 @@
     history.replaceState(null, '', url);
   }
 
+  /** Cancels stale delayed/repeat applies when navigating or hash changes. */
+  var prefillRunToken = null;
+
+  /**
+   * Donorbox initializes defaults after paint. We wait for the form, add a short pause,
+   * then apply several times so our values win over late-running framework code.
+   */
   function tryDecodeAndApply() {
     var parsed = decodePayload(location.hash);
-    if (!parsed) return;
+    if (!parsed) {
+      prefillRunToken = null;
+      return;
+    }
     var data = normalizePayload(parsed);
     if (!data) return;
-    var attempts = 0;
-    function tryApply() {
-      attempts++;
-      var ready = document.querySelector('#amount');
-      if (!ready && attempts < 100) {
-        setTimeout(tryApply, 100);
-        return;
-      }
-      if (!ready) {
-        console.warn('[Donorbox prefill] Form not detected; leaving URL hash unchanged.');
-        return;
-      }
-      apply(data);
-      clearHashFromUrl();
-      console.info('[Donorbox prefill] Applied offline payload.');
+
+    var myToken = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    prefillRunToken = myToken;
+
+    function waitForAmountField(cb) {
+      var tries = 0;
+      (function poll() {
+        if (prefillRunToken !== myToken) return;
+        if (document.querySelector('#amount')) {
+          if (prefillRunToken !== myToken) return;
+          cb();
+          return;
+        }
+        if (++tries > 120) {
+          console.warn('[Donorbox prefill] Form not detected; leaving URL hash unchanged.');
+          if (prefillRunToken === myToken) prefillRunToken = null;
+          return;
+        }
+        setTimeout(poll, 100);
+      })();
     }
-    tryApply();
+
+    function afterPageQuiet(cb) {
+      function go() {
+        setTimeout(function () {
+          if (prefillRunToken !== myToken) return;
+          cb();
+        }, 450);
+      }
+      if (document.readyState === 'complete') {
+        go();
+        return;
+      }
+      window.addEventListener('load', function once() {
+        window.removeEventListener('load', once);
+        go();
+      });
+    }
+
+    waitForAmountField(function () {
+      afterPageQuiet(function () {
+        if (prefillRunToken !== myToken) return;
+        var offsetsMs = [0, 700, 1600, 2800, 4200, 5800];
+        offsetsMs.forEach(function (ms, idx) {
+          setTimeout(function () {
+            if (prefillRunToken !== myToken) return;
+            if (!document.querySelector('#amount')) return;
+            apply(data);
+            if (idx === offsetsMs.length - 1) {
+              clearHashFromUrl();
+              if (prefillRunToken === myToken) prefillRunToken = null;
+              console.info('[Donorbox prefill] Applied offline payload (delayed + repeated).');
+            }
+          }, ms);
+        });
+      });
+    });
   }
 
   tryDecodeAndApply();
