@@ -607,9 +607,9 @@
   function buildDonorUrl(supporterId, payloadEnc) {
     var fid = state.formId || '277791';
     return (
-      'https://donorbox.org/org_admin/supporters/' +
+      'https://donorbox.org/org_admin/donations/new?donor_id=' +
       encodeURIComponent(String(supporterId)) +
-      '/donor_donations/new?form_id=' +
+      '&type=individualDonation&form_id=' +
       encodeURIComponent(String(fid)) +
       '#dbOffline=' +
       payloadEnc

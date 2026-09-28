@@ -1,8 +1,10 @@
 // ==UserScript==
 // @name         Donorbox offline donation prefill
 // @namespace    lrdc-offline-importer
-// @version      1.0.6
+// @version      1.0.7
 // @description  Fills the Donorbox org-admin offline donation form from #dbOffline= / #!dbOffline= base64 JSON (flat or nested donation object). You must be logged in; complete captcha and submit manually if required.
+// @match        https://donorbox.org/org_admin/donations/new*
+// @match        https://*.donorbox.org/org_admin/donations/new*
 // @match        https://donorbox.org/org_admin/supporters/*/donor_donations/new*
 // @match        https://*.donorbox.org/org_admin/supporters/*/donor_donations/new*
 // @run-at       document-idle
