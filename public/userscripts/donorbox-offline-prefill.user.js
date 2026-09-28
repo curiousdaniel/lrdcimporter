@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Donorbox offline donation prefill
 // @namespace    lrdc-offline-importer
-// @version      1.0.7
+// @version      1.0.8
 // @description  Fills the Donorbox org-admin offline donation form from #dbOffline= / #!dbOffline= base64 JSON (flat or nested donation object). You must be logged in; complete captcha and submit manually if required.
 // @match        https://donorbox.org/org_admin/donations/new*
 // @match        https://*.donorbox.org/org_admin/donations/new*
@@ -16,7 +16,7 @@
  * - Payment type:  select#donation_donation_type
  * - Donation date: input#donation_donation_date
  * - Deposit date: input#donation_offline_donation_additional_detail_attributes_deposit_date
- * - Amount:        input#amount
+ * - Amount:        input#donation_amount (legacy: input#amount)
  * - Org / donation notes: textarea#donation_org_comments and #donation_comment when present
  * - Check # (opt): input#donation_offline_donation_additional_detail_attributes_check_number
  * - Purpose of donation: select next to label “The Purpose of Your Donation:” (or donation form / campaign select fallbacks), option text must match launcher payload
@@ -186,6 +186,55 @@
     el.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
+  function amountField() {
+    return (
+      document.querySelector('#donation_amount') ||
+      document.querySelector('#amount') ||
+      document.querySelector('input[name="donation[amount]"]')
+    );
+  }
+
+  function formIdFromLocation() {
+    try {
+      return new URLSearchParams(location.search).get('form_id') || '';
+    } catch (e) {
+      return '';
+    }
+  }
+
+  /**
+   * The new donations form ignores ?form_id= and leaves Campaign blank.
+   * Click the matching autocomplete row so Stimulus records the selection.
+   */
+  function selectCampaign(formId) {
+    if (!formId) return;
+    var hidden = document.getElementById('form_id');
+    if (!hidden || String(hidden.value) === String(formId)) return;
+    var root = hidden.closest
+      ? hidden.closest('[data-controller*="autocompletion"]')
+      : hidden.parentElement;
+    if (!root) return;
+    var items = root.querySelectorAll('[data-value]');
+    var item = null;
+    for (var i = 0; i < items.length; i++) {
+      if (String(items[i].getAttribute('data-value')) === String(formId)) {
+        item = items[i];
+        break;
+      }
+    }
+    if (item) item.click();
+    if (String(hidden.value) === String(formId)) return;
+    hidden.value = String(formId);
+    var label = item ? item.getAttribute('data-label') || '' : '';
+    if (label) {
+      var textInput = root.querySelector('input[name="autocomplete_input"]');
+      if (textInput) textInput.value = label.replace(/&#39;/g, "'");
+      if (root.classList) root.classList.add('record-selected');
+    }
+    hidden.dispatchEvent(new Event('change', { bubbles: true }));
+    hidden.dispatchEvent(new CustomEvent('autocomplete:selected', { bubbles: true }));
+  }
+
   function setSelectValue(sel, value) {
     if (!sel || value == null || value === '') return;
     var v = normalizePaymentType(value) || String(value).toLowerCase().trim();
@@ -229,6 +278,8 @@
       }
     }
     return (
+      document.querySelector('#donation_designation') ||
+      document.querySelector('select[name="donation[designation]"]') ||
       document.querySelector('select[name="donation[donation_form_id]"]') ||
       document.querySelector('#donation_donation_form_id') ||
       document.querySelector('select[name="donation[campaign_id]"]') ||
@@ -266,7 +317,7 @@
     var depositDate = document.querySelector(
       '#donation_offline_donation_additional_detail_attributes_deposit_date'
     );
-    var amount = document.querySelector('#amount');
+    var amount = amountField();
     var orgComments = document.querySelector('#donation_org_comments');
     var donorComment = document.querySelector('#donation_comment');
     var checkNum = document.querySelector(
@@ -337,7 +388,7 @@
       var tries = 0;
       (function poll() {
         if (prefillRunToken !== myToken) return;
-        if (document.querySelector('#amount')) {
+        if (amountField()) {
           if (prefillRunToken !== myToken) return;
           cb();
           return;
@@ -375,7 +426,8 @@
         offsetsMs.forEach(function (ms, idx) {
           setTimeout(function () {
             if (prefillRunToken !== myToken) return;
-            if (!document.querySelector('#amount')) return;
+            if (!amountField()) return;
+            selectCampaign(formIdFromLocation());
             apply(data);
             if (idx === offsetsMs.length - 1) {
               clearHashFromUrl();
